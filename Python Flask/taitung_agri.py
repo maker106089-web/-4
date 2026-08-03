@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,8 +20,8 @@ plt.rcParams["axes.unicode_minus"] = False
 
 # 🌾 農產品選單與 API 官方名稱對照字典
 CROP_MAP = {
-    "釋迦": "番荔枝",  # 農業部官方市場登記名稱為「番荔枝」
-    "高麗菜": "甘藍",  # 農業部官方市場登記名稱為「甘藍」
+    "釋迦": "番荔枝",
+    "高麗菜": "甘藍",
     "香蕉": "香蕉",
     "木瓜": "木瓜",
     "百香果": "百香果",
@@ -30,7 +30,7 @@ CROP_MAP = {
 
 # 💰 各作物估算零售價之加成倍數
 MULTIPLIER_MAP = {
-    "高麗菜": 1.67,  # 高麗菜外葉損耗率高，倍數設為 1.67 (如 70 元/公斤 -> 116.7 元/公斤)
+    "高麗菜": 1.67,
     "釋迦": 1.5,
     "百香果": 1.5,
     "木瓜": 1.4,
@@ -56,31 +56,118 @@ def parse_roc_date_to_date(roc_str):
     return None
 
 
-def get_dynamic_dates(days_count=4):
-    """動態計算最近 N 天的日期（回傳 date 物件清單、民國曆 API 查詢字串清單、圖表標籤）"""
-    today = datetime.now().date()
-    date_objs = [today - timedelta(days=i) for i in range(days_count - 1, -1, -1)]
+def check_api_has_today_data():
+    """快速探測 API：今天台東市場是否已經有交易資料了？"""
+    tw_tz = timezone(timedelta(hours=8))
+    today = datetime.now(tw_tz).date()
+    
+    # 轉換成民國曆格式 (例如 113.07.28)
+    roc_today = f"{today.year - 1911}.{today.strftime('%m.%d')}"
+    url = "https://data.moa.gov.tw/api/v1/AgriProductsTransType/"
+    
+    # 🌟 關鍵 1：探測時，直接指定查「台東市」，避免被其他縣市提早更新給騙了！
+    params = {
+        "Start_time": roc_today, 
+        "End_time": roc_today,
+        "MarketName": "台東市"
+    }
+    
+    try:
+        res = requests.get(url, params=params, timeout=5)
+        if res.status_code == 200:
+            json_data = res.json()
+            
+            if isinstance(json_data, dict):
+                data = json_data.get("Data", [])
+            elif isinstance(json_data, list):
+                data = json_data
+            else:
+                data = []
+                
+            # 如果今天台東市有大於 0 筆的資料，才代表真的更新了！
+            if len(data) > 0:
+                return True
+    except Exception as e:
+        print(f"探測今日 API 失敗: {e}")
+        
+    return False
 
+
+def get_ui_alert_status():
+    """動態判斷並回傳前端 UI 需要的狀態提示、圖示與文字"""
+    tw_tz = timezone(timedelta(hours=8))
+    now = datetime.now(tw_tz)
+    current_hour = now.hour
+    
+    # 呼叫上方的 API 探測器
+    is_updated = check_api_has_today_data()
+    
+    if is_updated:
+        return {
+            "alert_class": "alert-success",
+            "alert_icon": "fa-check-circle",
+            "alert_title": "資料已更新：",
+            "alert_msg": "今日農業部資料已順利更新！"
+        }
+    else:
+        if current_hour < 8:
+            return {
+                "alert_class": "alert-info",
+                "alert_icon": "fa-clock",
+                "alert_title": "準備中：",
+                "alert_msg": "等待今日市場資料上線中...（目前畫面為最新可用資料）"
+            }
+        elif 8 <= current_hour < 12:
+            return {
+                "alert_class": "alert-warning",
+                "alert_icon": "fa-sync fa-spin",
+                "alert_title": "偵測中：",
+                "alert_msg": "農業部今日資料尚未更新，系統持續偵測中...（目前畫面為最新可用資料）"
+            }
+        else:
+            return {
+                "alert_class": "alert-secondary",
+                "alert_icon": "fa-info-circle",
+                "alert_title": "今日狀態：",
+                "alert_msg": "今日休市或尚未有新資料發布（目前畫面為最新可用資料）"
+            }
+
+
+def get_dynamic_dates(days_count=4):
+    """動態計算最近 N 天的日期（搭配 API 自動探測功能）"""
+    tw_tz = timezone(timedelta(hours=8))
+    today = datetime.now(tw_tz).date()
+    
+    print("🔍 正在自動偵測今日 API 是否已發布最新價格...")
+    if check_api_has_today_data():
+        print("✅ 今日資料已更新！圖表將顯示至「今天」。")
+        base_date = today
+    else:
+        print("⏳ 今日資料尚未更新，圖表將暫時顯示至「昨天」。")
+        base_date = today - timedelta(days=1)
+
+    date_objs = [base_date - timedelta(days=i) for i in range(days_count - 1, -1, -1)]
     weekday_names = ["一", "二", "三", "四", "五", "六", "日"]
 
-    # 轉為民國曆 API 格式清單，例如：['115.07.21', '115.07.22', ...]
     roc_dates = [f"{d.year - 1911}.{d.strftime('%m.%d')}" for d in date_objs]
-
-    # 圖表標籤，例如：['7/21 (二)', '7/22 (三)', ...]
-    display_labels = [
-        f"{d.month}/{d.day} ({weekday_names[d.weekday()]})" for d in date_objs
-    ]
+    display_labels = [f"{d.month}/{d.day} ({weekday_names[d.weekday()]})" for d in date_objs]
 
     return date_objs, roc_dates, display_labels
 
 
 def fetch_recent_data_by_day(roc_dates):
-    """按天向 API 請求資料，避開 1,000 筆上限，並處理 JSON 格式相容性"""
+    """按天向 API 請求資料，並處理 JSON 格式相容性"""
     url = "https://data.moa.gov.tw/api/v1/AgriProductsTransType/"
     all_dfs = []
 
     for r_date in roc_dates:
-        params = {"Start_time": r_date, "End_time": r_date}
+        # 🌟 關鍵 2：抓資料時指定「台東市」，並且加大上限到 5000 筆，絕對不怕被截斷
+        params = {
+            "Start_time": r_date,
+            "End_time": r_date,
+            "MarketName": "台東市",
+            "$top": 5000 
+        }
         try:
             res = requests.get(url, params=params, timeout=10)
             if res.status_code == 200:
@@ -113,35 +200,34 @@ def generate_charts_for_crop(target_crop, df, date_objs, display_labels):
     base_df = pd.DataFrame({"DateObj": date_objs, "DisplayLabel": display_labels})
     prices_wholesale = None
 
-    # 1. 取得 API 搜尋關鍵字 (如: 高麗菜 -> 甘藍)
     api_keyword = CROP_MAP.get(target_crop, target_crop)
-
-    # 2. 取得該作物的零售價計算倍數 (如: 高麗菜 -> 1.67)
     multiplier = MULTIPLIER_MAP.get(target_crop, 1.4)
 
     if df is not None and not df.empty:
-        # 使用官方關鍵字篩選資料
-        crop_df = df[df["CropName"].str.contains(api_keyword, na=False)].copy()
+        # 🌟 關鍵 3：在 Python 內再次過濾，雙重確保不會混到外縣市
+        if "MarketName" in df.columns:
+            crop_df = df[
+                df["CropName"].str.contains(api_keyword, na=False) &
+                df["MarketName"].str.contains("台東", na=False)
+            ].copy()
+        else:
+            crop_df = df[df["CropName"].str.contains(api_keyword, na=False)].copy()
 
         if not crop_df.empty:
             crop_df["DateObj"] = crop_df["TransDate"].apply(parse_roc_date_to_date)
             crop_df["Avg_Price"] = pd.to_numeric(crop_df["Avg_Price"], errors="coerce")
 
-            # 計算每日全台市場平均價
             daily_trend = (
                 crop_df.groupby("DateObj")["Avg_Price"].mean().reset_index()
             )
 
-            # 對齊 4 天日期
             merged_df = base_df.merge(daily_trend, on="DateObj", how="left")
 
-            # 有效數據點大於 1 個時進行前向/後向插值補值
             valid_count = merged_df["Avg_Price"].notna().sum()
             if valid_count > 1:
                 merged_df["Avg_Price"] = merged_df["Avg_Price"].ffill().bfill()
                 prices_wholesale = merged_df["Avg_Price"].round(1)
             elif valid_count == 1:
-                # 若僅有 1 天有資料，補充合理微幅波動值
                 base_p = merged_df["Avg_Price"].dropna().values[0]
                 np.random.seed(abs(hash(target_crop)) % (2**32))
                 variations = np.random.uniform(-2.5, 2.5, size=len(display_labels))
@@ -152,14 +238,12 @@ def generate_charts_for_crop(target_crop, df, date_objs, display_labels):
                     ]
                 )
 
-    # 若 API 完全查無資料，提供模擬波動行情
     if prices_wholesale is None or prices_wholesale.isna().all():
         base_p = 70.0 if target_crop in ["釋迦", "高麗菜"] else 35.0
         np.random.seed(abs(hash(target_crop)) % (2**32))
         variations = np.random.uniform(-3.5, 3.5, size=len(display_labels))
         prices_wholesale = pd.Series(np.round(base_p + variations, 1))
 
-    # 使用專屬倍數計算零售價 (例如高麗菜 * 1.67)
     prices_retail = (prices_wholesale * multiplier).round(1)
 
     # --------------------------------------------------
@@ -229,9 +313,9 @@ def generate_charts_for_crop(target_crop, df, date_objs, display_labels):
     )
 
     for label, p in zip(display_labels, prices_wholesale):
-        # ✨ 關鍵修復：這裡加上 {:.1f} 強制鎖死小數點後一位
+        # 鎖死小數點後一位
         ax.annotate(
-            f"${p:.1f}", 
+            f"${p:.1f}",
             (label, p),
             textcoords="offset points",
             xytext=(0, 8),
@@ -271,7 +355,8 @@ def generate_all_charts():
     df = fetch_recent_data_by_day(roc_dates)
 
     if df is not None and not df.empty:
-        df = df[df["CropName"] != "休市"].copy()
+        if "CropName" in df.columns:
+            df = df[df["CropName"] != "休市"].copy()
 
     print("\n📊 開始繪製農產品圖表...")
     for crop in CROP_MAP.keys():
