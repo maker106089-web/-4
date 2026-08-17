@@ -1,0 +1,6 @@
+flask
+pandas
+matplotlib
+requests
+numpy
+gunicorn
