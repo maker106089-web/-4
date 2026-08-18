@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timedelta, timezone
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import numpy as np
 import pandas as pd
 import requests
@@ -9,14 +10,34 @@ import requests
 # 設定背景繪圖，避免跳出視窗
 matplotlib.use("Agg")
 
-# 設定風格與微軟正黑體
+# 依實際可用字型動態選擇，避免在 Linux/Render 環境使用不存在的 Microsoft JhengHei
+preferred_fonts = [
+    "Microsoft JhengHei",
+    "PingFang TC",
+    "Noto Sans CJK TC",
+    "Noto Sans TC",
+    "Source Han Sans TC",
+    "WenQuanYi Zen Hei",
+    "WenQuanYi Micro Hei",
+    "Microsoft YaHei",
+    "SimHei",
+    "Arial Unicode MS",
+    "sans-serif",
+]
+available_fonts = {font.name for font in font_manager.fontManager.ttflist}
+selected_font = next((font for font in preferred_fonts if font in available_fonts), "DejaVu Sans")
+
 plt.style.use(
     "seaborn-v0_8-whitegrid"
     if "seaborn-v0_8-whitegrid" in plt.style.available
     else "default"
 )
-plt.rcParams["font.sans-serif"] = ["Microsoft JhengHei"]
+plt.rcParams["font.family"] = "sans-serif"
+plt.rcParams["font.sans-serif"] = preferred_fonts
 plt.rcParams["axes.unicode_minus"] = False
+plt.rcParams["font.sans-serif"] = [selected_font] + [
+    font for font in preferred_fonts if font != selected_font
+]
 
 # 🌾 農產品選單與 API 官方名稱對照字典
 CROP_MAP = {
